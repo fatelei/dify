@@ -19,7 +19,7 @@ from libs.datetime_utils import naive_utc_now
 from libs.login import current_user
 from models import Account, Tenant, TenantAccountJoin, TenantStatus
 from models.dataset import Dataset, RateLimitLog
-from models.model import ApiToken, App, EndUser, DefaultEndUserSessionID
+from models.model import ApiToken, App, DefaultEndUserSessionID, EndUser
 from services.end_user_service import EndUserService
 from services.feature_service import FeatureService
 
@@ -332,8 +332,6 @@ def validate_and_get_api_token(scope: str | None = None):
     return api_token
 
 
-<<<<<<< HEAD
-=======
 def create_or_update_end_user_for_user_id(app_model: App, user_id: str | None = None) -> EndUser:
     """
     Create or update session terminal based on user ID.
@@ -368,7 +366,6 @@ def create_or_update_end_user_for_user_id(app_model: App, user_id: str | None = 
     return end_user
 
 
->>>>>>> 0760bff97 (fix: https://github.com/langgenius/dify/issues/24245)
 class DatasetApiResource(Resource):
     method_decorators = [validate_dataset_token]
 
