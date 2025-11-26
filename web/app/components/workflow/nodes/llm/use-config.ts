@@ -9,7 +9,7 @@ import {
 } from '../../hooks'
 import useAvailableVarList from '../_base/hooks/use-available-var-list'
 import useConfigVision from '../../hooks/use-config-vision'
-import type { LLMNodeType, StructuredOutput } from './types'
+import type { CredentialOverride, LLMNodeType, StructuredOutput } from './types'
 import { useModelList, useModelListAndDefaultModelAndCurrentProviderAndModel } from '@/app/components/header/account-setting/model-provider-page/hooks'
 import {
   ModelFeatureEnum,
@@ -128,18 +128,42 @@ const useConfig = (id: string, payload: LLMNodeType) => {
     },
   })
 
-  const handleModelChanged = useCallback((model: { provider: string; modelId: string; mode?: string }) => {
+  const handleModelChanged = useCallback((model: { provider: string; modelId: string; mode?: string; credential_override?: CredentialOverride }) => {
     const newInputs = produce(inputRef.current, (draft) => {
-      draft.model.provider = model.provider
-      draft.model.name = model.modelId
-      draft.model.mode = model.mode!
-      const isModeChange = model.mode !== inputRef.current.model.mode
-      if (isModeChange && defaultConfig && Object.keys(defaultConfig).length > 0)
-        appendDefaultPromptConfig(draft, defaultConfig, model.mode === AppModeEnum.CHAT)
+      // Only update provider/model if they are provided
+      if (model.provider)
+        draft.model.provider = model.provider
+
+      if (model.modelId)
+        draft.model.name = model.modelId
+
+      if (model.mode)
+        draft.model.mode = model.mode!
+
+      // Update credential override if provided
+      if (model.credential_override !== undefined)
+        draft.model.credential_override = model.credential_override
+
+      // Only handle mode change for prompt config if mode is actually being changed
+      if (model.mode && model.mode !== inputRef.current.model.mode) {
+        const isModeChange = model.mode !== inputRef.current.model.mode
+        if (isModeChange && defaultConfig && Object.keys(defaultConfig).length > 0)
+          appendDefaultPromptConfig(draft, defaultConfig, model.mode === AppModeEnum.CHAT)
+      }
     })
     setInputs(newInputs)
-    setModelChanged(true)
+
+    // Only set modelChanged for actual model/provider changes, not credential override
+    if (model.provider || model.modelId || model.mode)
+      setModelChanged(true)
   }, [setInputs, defaultConfig, appendDefaultPromptConfig])
+
+  const handleCredentialOverrideChange = useCallback((credential_override: CredentialOverride | undefined) => {
+    const newInputs = produce(inputRef.current, (draft) => {
+      draft.model.credential_override = credential_override
+    })
+    setInputs(newInputs)
+  }, [setInputs])
 
   useEffect(() => {
     if (currentProvider?.provider && currentModel?.model && !model.provider) {
@@ -368,6 +392,7 @@ const useConfig = (id: string, payload: LLMNodeType) => {
     handleStructureOutputEnableChange,
     filterJinja2InputVar,
     handleReasoningFormatChange,
+    handleCredentialOverrideChange,
   }
 }
 

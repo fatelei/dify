@@ -63,6 +63,7 @@ const Panel: FC<NodePanelProps<LLMNodeType>> = ({
     handleStructureOutputChange,
     filterJinja2InputVar,
     handleReasoningFormatChange,
+    handleCredentialOverrideChange,
   } = useConfig(id, data)
 
   const model = inputs.model
@@ -135,6 +136,34 @@ const Panel: FC<NodePanelProps<LLMNodeType>> = ({
             )}
           </>
         </Field>
+
+        {/* Credential Override */}
+        {model?.provider && !readOnly && (
+          <Field
+            title={t(`${i18nPrefix}.credentialOverride`)}
+            tooltip={t(`${i18nPrefix}.credentialOverrideTooltip`)!}
+          >
+            <div className='space-y-2'>
+              <input
+                type='text'
+                placeholder={t(`${i18nPrefix}.credentialIdPlaceholder`)}
+                value={inputs.model?.credential_override?.credential_id || ''}
+                onChange={(e) => {
+                  const newValue = e.target.value.trim()
+                  handleCredentialOverrideChange(newValue
+                    ? { credential_id: newValue, credential_name: undefined }
+                    : undefined,
+                  )
+                }}
+                disabled={readOnly}
+                className='w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500'
+              />
+              <div className='text-xs text-text-tertiary'>
+                {t(`${i18nPrefix}.credentialIdHelp`)}
+              </div>
+            </div>
+          </Field>
+        )}
 
         {/* Prompt */}
         {model.name && (
