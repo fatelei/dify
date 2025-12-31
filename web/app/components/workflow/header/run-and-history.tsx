@@ -4,9 +4,12 @@ import {
 } from '@remixicon/react'
 import { memo } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useToastContext } from '@/app/components/base/toast'
 import { cn } from '@/utils/classnames'
 import {
+  useChecklistBeforePublish,
   useNodesReadOnly,
+  useWorkflowRunValidation,
   useWorkflowStartRun,
 } from '../hooks'
 import Checklist from './checklist'
@@ -15,15 +18,30 @@ import ViewHistory from './view-history'
 
 const PreviewMode = memo(() => {
   const { t } = useTranslation()
+  const { notify } = useToastContext()
   const { handleWorkflowStartRunInChatflow } = useWorkflowStartRun()
+  const { hasValidationErrors } = useWorkflowRunValidation()
+  const { handleCheckBeforePublish } = useChecklistBeforePublish()
+
+  const handleClick = async () => {
+    // Gate preview behind the same validations used for Publish
+    if (hasValidationErrors) {
+      notify({ type: 'error', message: t('panel.checklistTip', { ns: 'workflow' }) })
+      return
+    }
+    const ok = await handleCheckBeforePublish()
+    if (!ok)
+      return
+    handleWorkflowStartRunInChatflow()
+  }
 
   return (
     <div
       className={cn(
         'flex h-7 items-center rounded-md px-2.5 text-[13px] font-medium text-components-button-secondary-accent-text',
-        'cursor-pointer hover:bg-state-accent-hover',
+        hasValidationErrors ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-state-accent-hover',
       )}
-      onClick={() => handleWorkflowStartRunInChatflow()}
+      onClick={handleClick}
     >
       <RiPlayLargeLine className="mr-1 h-4 w-4" />
       {t('common.debugAndPreview', { ns: 'workflow' })}
