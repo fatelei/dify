@@ -9,13 +9,16 @@ This test suite covers:
 """
 
 import json
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
 
+from core.tools.entities.tool_entities import ToolProviderType
 from models.model import (
     App,
     AppAnnotationHitHistory,
@@ -1460,3 +1463,107 @@ class TestConversationStatusCount:
 
             # Assert
             assert result["paused"] == 1
+
+
+class TestAppDeletedTools:
+    """Tests for App.deleted_tools covering API provider UUID handling."""
+
+    def _make_agent_mode(self, tool: dict) -> dict:
+        return {
+            "enabled": True,
+            "strategy": "function_call",
+            "tools": [tool],
+            "prompt": None,
+        }
+
+    def _mock_app_model_config(self, agent_mode: dict):
+        mock_cfg = MagicMock()
+        mock_cfg.agent_mode = json.dumps(agent_mode)
+        mock_cfg.agent_mode_dict = agent_mode
+        return mock_cfg
+
+    def _mock_session_with_rows(self, rows):
+        """Create a context-managed Session mock whose execute().fetchall() returns rows."""
+        mock_session = MagicMock()
+        mock_session.execute.return_value.fetchall.return_value = rows
+        mock_cm = MagicMock()
+        mock_cm.__enter__.return_value = mock_session
+        mock_cm.__exit__.return_value = False
+        return mock_cm
+
+    def test_deleted_tools_excludes_existing_api_provider_uuid_row(self):
+        """
+        When DB returns UUID objects for tool_api_providers.id, existing_api_providers should be stringified,
+        so a matching string provider_id in tools is NOT reported as deleted.
+        """
+        # Arrange
+        provider_id = str(uuid4())
+        tool = {
+            "tool_name": "calc",
+            "provider_type": ToolProviderType.API,
+            "provider_id": provider_id,
+            "tool_label": "Calculator",
+        }
+        app = App(
+            tenant_id=str(uuid4()),
+            name="Test App",
+            mode=AppMode.CHAT,
+            enable_site=True,
+            enable_api=True,
+            created_by=str(uuid4()),
+        )
+        agent_mode = self._make_agent_mode(tool)
+        app_cfg = self._mock_app_model_config(agent_mode)
+
+        # Row with UUID id from DB
+        row = MagicMock()
+        row.id = uuid.UUID(provider_id)
+
+        with patch.object(App, "app_model_config", new_callable=lambda: property(lambda self: app_cfg)):
+            # Patch db to bypass Flask-SQLAlchemy engine property (no app registration needed)
+            with patch("models.model.db", SimpleNamespace(engine=MagicMock())):
+                with patch("models.model.Session", return_value=self._mock_session_with_rows([row])):
+                    # Act
+                    result = app.deleted_tools
+
+        # Assert
+        assert result == []
+
+    def test_deleted_tools_includes_missing_api_provider(self):
+        """
+        If DB returns no matching provider IDs, the API tool should be marked as deleted.
+        """
+        # Arrange
+        provider_id = str(uuid4())
+        tool = {
+            "tool_name": "calc",
+            "provider_type": ToolProviderType.API,
+            "provider_id": provider_id,
+            "tool_label": "Calculator",
+        }
+        app = App(
+            tenant_id=str(uuid4()),
+            name="Test App",
+            mode=AppMode.CHAT,
+            enable_site=True,
+            enable_api=True,
+            created_by=str(uuid4()),
+        )
+        agent_mode = self._make_agent_mode(tool)
+        app_cfg = self._mock_app_model_config(agent_mode)
+
+        with patch.object(App, "app_model_config", new_callable=lambda: property(lambda self: app_cfg)):
+            # Patch db to bypass Flask-SQLAlchemy engine property (no app registration needed)
+            with patch("models.model.db", SimpleNamespace(engine=MagicMock())):
+                with patch("models.model.Session", return_value=self._mock_session_with_rows([])):
+                    # Act
+                    result = app.deleted_tools
+
+        # Assert
+        assert result == [
+            {
+                "type": ToolProviderType.API,
+                "tool_name": "calc",
+                "provider_id": provider_id,
+            }
+        ]
