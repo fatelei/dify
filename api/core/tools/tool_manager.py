@@ -1044,11 +1044,10 @@ class ToolManager:
                         if variable is None:
                             raise ToolParameterError(f"Variable {tool_input.value} does not exist")
                         parameter_value = variable.value
-                    elif tool_input.type == "constant":
-                        parameter_value = tool_input.value
-                    elif tool_input.type == "mixed":
-                        segment_group = variable_pool.convert_template(str(tool_input.value))
-                        parameter_value = segment_group.text
+                    elif tool_input.type in ("constant", "mixed"):
+                        parameter_value = cls._resolve_tool_configuration_value(
+                            value=tool_input.value, variable_pool=variable_pool
+                        )
                     else:
                         raise ToolParameterError(f"Unknown tool input type '{tool_input.type}'")
                     runtime_parameters[parameter.name] = parameter_value
@@ -1057,6 +1056,20 @@ class ToolManager:
                     value = parameter.init_frontend_parameter(tool_configurations.get(parameter.name))
                     runtime_parameters[parameter.name] = value
         return runtime_parameters
+
+    @classmethod
+    def _resolve_tool_configuration_value(cls, *, value: Any, variable_pool: "VariablePool") -> Any:
+        if isinstance(value, str):
+            segment_group = variable_pool.convert_template(value)
+            return segment_group.text
+        if isinstance(value, list):
+            return [cls._resolve_tool_configuration_value(value=item, variable_pool=variable_pool) for item in value]
+        if isinstance(value, dict):
+            return {
+                key: cls._resolve_tool_configuration_value(value=item, variable_pool=variable_pool)
+                for key, item in value.items()
+            }
+        return value
 
 
 ToolManager.load_hardcoded_providers_cache()

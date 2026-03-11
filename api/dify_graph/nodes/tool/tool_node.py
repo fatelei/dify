@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Generator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +35,8 @@ from .exc import (
 if TYPE_CHECKING:
     from dify_graph.entities import GraphInitParams
     from dify_graph.runtime import GraphRuntimeState, VariablePool
+
+logger = logging.getLogger(__name__)
 
 
 class ToolNode(Node[ToolNodeData]):
@@ -99,6 +102,7 @@ class ToolNode(Node[ToolNodeData]):
                 variable_pool,
             )
         except ToolNodeError as e:
+            logger.warning(e, exc_info=True)
             yield StreamCompletedEvent(
                 node_run_result=NodeRunResult(
                     status=WorkflowNodeExecutionStatus.FAILED,
@@ -137,6 +141,7 @@ class ToolNode(Node[ToolNodeData]):
                 conversation_id=conversation_id.text if conversation_id else None,
             )
         except ToolNodeError as e:
+            logger.warning(e, exc_info=True)
             yield StreamCompletedEvent(
                 node_run_result=NodeRunResult(
                     status=WorkflowNodeExecutionStatus.FAILED,
@@ -160,6 +165,7 @@ class ToolNode(Node[ToolNodeData]):
                 tool_runtime=tool_runtime,
             )
         except ToolInvokeError as e:
+            logger.warning(e, exc_info=True)
             yield StreamCompletedEvent(
                 node_run_result=NodeRunResult(
                     status=WorkflowNodeExecutionStatus.FAILED,
@@ -170,6 +176,7 @@ class ToolNode(Node[ToolNodeData]):
                 )
             )
         except PluginInvokeError as e:
+            logger.warning(e, exc_info=True)
             yield StreamCompletedEvent(
                 node_run_result=NodeRunResult(
                     status=WorkflowNodeExecutionStatus.FAILED,
@@ -180,6 +187,7 @@ class ToolNode(Node[ToolNodeData]):
                 )
             )
         except PluginDaemonClientSideError as e:
+            logger.warning(e, exc_info=True)
             yield StreamCompletedEvent(
                 node_run_result=NodeRunResult(
                     status=WorkflowNodeExecutionStatus.FAILED,
@@ -227,13 +235,28 @@ class ToolNode(Node[ToolNodeData]):
                     continue
                 parameter_value = variable.value
             elif tool_input.type in {"mixed", "constant"}:
-                segment_group = variable_pool.convert_template(str(tool_input.value))
-                parameter_value = segment_group.log if for_log else segment_group.text
+                parameter_value = self._resolve_tool_input_value(
+                    value=tool_input.value, variable_pool=variable_pool, for_log=for_log
+                )
             else:
                 raise ToolParameterError(f"Unknown tool input type '{tool_input.type}'")
             result[parameter_name] = parameter_value
-
         return result
+
+    @classmethod
+    def _resolve_tool_input_value(cls, *, value: Any, variable_pool: "VariablePool", for_log: bool) -> Any:
+        if isinstance(value, str):
+            segment_group = variable_pool.convert_template(value)
+            return segment_group.log if for_log else segment_group.text
+        if isinstance(value, list):
+            return [cls._resolve_tool_input_value(
+                value=item, variable_pool=variable_pool, for_log=for_log) for item in value]
+        if isinstance(value, dict):
+            return {
+                key: cls._resolve_tool_input_value(value=item, variable_pool=variable_pool, for_log=for_log)
+                for key, item in value.items()
+            }
+        return value
 
     def _fetch_files(self, variable_pool: "VariablePool") -> list[File]:
         variable = variable_pool.get(["sys", SystemVariableKey.FILES])

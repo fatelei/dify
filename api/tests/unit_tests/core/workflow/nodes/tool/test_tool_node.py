@@ -3,12 +3,14 @@ from __future__ import annotations
 import sys
 import types
 from collections.abc import Generator
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.tools.entities.tool_entities import ToolInvokeMessage
+from core.tools.entities.common_entities import I18nObject
+from core.tools.entities.tool_entities import ToolInvokeMessage, ToolParameter
 from core.tools.utils.message_transformer import ToolFileMessageTransformer
 from dify_graph.file import File, FileTransferMethod, FileType
 from dify_graph.model_runtime.entities.llm_entities import LLMUsage
@@ -167,3 +169,42 @@ def test_plain_link_messages_remain_links(tool_node: ToolNode):
     files_segment = completed_events[0].node_run_result.outputs["files"]
     assert isinstance(files_segment, ArrayFileSegment)
     assert files_segment.value == []
+
+
+def test_generate_parameters_preserves_structured_constant_values_with_templates(tool_node: ToolNode):
+    tool_node.node_data.tool_parameters = {
+        "payload": tool_node.node_data.ToolInput.model_validate(
+            {
+                "type": "constant",
+                "value": {
+                    "keyword": "{{#start.question#}}",
+                    "filters": ["{{#start.question#}}", "literal"],
+                },
+            }
+        )
+    }
+    tool_parameters = [
+        ToolParameter(
+            name="payload",
+            label=I18nObject(en_US="payload"),
+            human_description=I18nObject(en_US="payload"),
+            type=ToolParameter.ToolParameterType.OBJECT,
+            form=ToolParameter.ToolParameterForm.LLM,
+            required=True,
+            llm_description="payload",
+        )
+    ]
+    tool_node.graph_runtime_state.variable_pool.add(["start", "question"], "dify")
+
+    parameters = tool_node._generate_parameters(
+        tool_parameters=tool_parameters,
+        variable_pool=tool_node.graph_runtime_state.variable_pool,
+        node_data=deepcopy(tool_node.node_data),
+    )
+
+    assert parameters == {
+        "payload": {
+            "keyword": "dify",
+            "filters": ["dify", "literal"],
+        }
+    }

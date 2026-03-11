@@ -90,7 +90,6 @@ class Tool(ABC):
         for parameter in self.entity.parameters or []:
             if parameter.name in tool_parameters:
                 result[parameter.name] = parameter.type.cast_value(tool_parameters[parameter.name])
-
         return result
 
     @abstractmethod

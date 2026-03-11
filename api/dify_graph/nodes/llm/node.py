@@ -27,7 +27,7 @@ from dify_graph.enums import (
     WorkflowNodeExecutionMetadataKey,
     WorkflowNodeExecutionStatus,
 )
-from dify_graph.file import File, FileTransferMethod, FileType, file_manager
+from dify_graph.file import FileTransferMethod, FileType, file_manager
 from dify_graph.model_runtime.entities import (
     ImagePromptMessageContent,
     PromptMessage,
