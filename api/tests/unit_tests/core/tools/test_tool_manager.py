@@ -863,13 +863,15 @@ def test_convert_tool_parameters_type_agent_and_workflow_branches():
     )
     file_param.form = ToolParameter.ToolParameterForm.FORM
 
-    with pytest.raises(ValueError, match="file type parameter file not supported in agent"):
-        ToolManager._convert_tool_parameters_type(
-            parameters=[file_param],
-            variable_pool=None,
-            tool_configurations={"file": "x"},
-            typ="agent",
-        )
+    # File-type parameters should be skipped (not rejected) in agent context;
+    # their values are handled via manual_input_value in runtime_support.
+    result = ToolManager._convert_tool_parameters_type(
+        parameters=[file_param],
+        variable_pool=None,
+        tool_configurations={"file": "x"},
+        typ="agent",
+    )
+    assert result == {}
 
     text_param = ToolParameter.get_simple_instance(
         name="text",
@@ -905,6 +907,31 @@ def test_convert_tool_parameters_type_agent_and_workflow_branches():
         typ="workflow",
     )
     assert variable == {"text": "from-variable"}
+
+
+def test_convert_tool_parameters_type_file_params_skipped_in_agent():
+    """All file-type parameters (FILE, FILES, SYSTEM_FILES) should be skipped in agent context,
+    regardless of whether they are required or not."""
+    for typ in (
+        ToolParameter.ToolParameterType.FILE,
+        ToolParameter.ToolParameterType.FILES,
+        ToolParameter.ToolParameterType.SYSTEM_FILES,
+    ):
+        for required in (True, False):
+            param = ToolParameter.get_simple_instance(
+                name="f",
+                llm_description="f",
+                typ=typ,
+                required=required,
+            )
+            param.form = ToolParameter.ToolParameterForm.FORM
+            result = ToolManager._convert_tool_parameters_type(
+                parameters=[param],
+                variable_pool=None,
+                tool_configurations={"f": "x"},
+                typ="agent",
+            )
+            assert result == {}, f"Expected empty result for {typ} required={required}"
 
 
 def test_convert_tool_parameters_type_constant_branch():

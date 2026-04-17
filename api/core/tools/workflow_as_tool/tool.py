@@ -79,6 +79,11 @@ class WorkflowTool(Tool):
         app = self._get_app(app_id=self.workflow_app_id)
         workflow = self._get_workflow(app_id=self.workflow_app_id, version=self.version)
 
+        # Try to extract pre-resolved file objects from tool_parameters
+        # BEFORE _transform_args, so we can bypass the DB re-lookup in the
+        # generator that may fail under restrictive file-access scopes.
+        pre_built_files = self._extract_pre_resolved_files(tool_parameters)
+
         # transform the tool parameters
         tool_parameters, files = self._transform_args(tool_parameters=tool_parameters)
 
@@ -106,6 +111,7 @@ class WorkflowTool(Tool):
             # because workflow pausing mechanisms (such as HumanInput) are not
             # supported within WorkflowTool execution context.
             pause_state_config=None,
+            system_files=pre_built_files if pre_built_files else None,
         )
         assert isinstance(result, dict)
         data = result.get("data", {})
@@ -205,6 +211,38 @@ class WorkflowTool(Tool):
             label=self.label,
         )
 
+    def _extract_pre_resolved_files(self, tool_parameters: dict[str, Any]) -> list[File] | None:
+        """Extract pre-resolved File objects from SYSTEM_FILES parameters.
+
+        When file dicts contain ``upload_file_id`` (set by the agent
+        serialisation layer), we can reconstruct File objects directly via
+        ``File.model_validate`` and skip the generator's DB round-trip.
+
+        Returns *None* when no pre-resolved files are found so the generator
+        falls back to its normal ``build_from_mappings`` path.
+        """
+        parameter_rules = self.get_merged_runtime_parameters()
+        result: list[File] = []
+        for parameter in parameter_rules:
+            if parameter.type != ToolParameter.ToolParameterType.SYSTEM_FILES:
+                continue
+            file_list = tool_parameters.get(parameter.name)
+            if not file_list or not isinstance(file_list, list):
+                continue
+            for f in file_list:
+                if not isinstance(f, Mapping):
+                    continue
+                # Only handle dicts that were pre-resolved (have an explicit
+                # file id AND the full File metadata from model_dump).
+                has_id = any(f.get(k) for k in ("upload_file_id", "tool_file_id", "datasource_file_id"))
+                if not has_id:
+                    return None  # not pre-resolved; fall back
+                try:
+                    result.append(File.model_validate(f))
+                except Exception:
+                    return None
+        return result or None
+
     def _resolve_user(self, user_id: str) -> Account | EndUser | None:
         """
         Resolve user object in both HTTP and worker contexts.
@@ -292,29 +330,34 @@ class WorkflowTool(Tool):
                 file = tool_parameters.get(parameter.name)
                 if file:
                     try:
-                        file_var_list = [
-                            build_file_from_stored_mapping(
+                        for f in file:
+                            if not isinstance(f, Mapping):
+                                continue
+                            # If the mapping already carries a resolved file id
+                            # (e.g. from agent runtime_parameters), build the
+                            # file dict directly to avoid a DB re-lookup that
+                            # may fail under a restrictive file-access scope.
+                            file_dict = self._try_build_file_dict_from_resolved(f)
+                            if file_dict is not None:
+                                files.append(file_dict)
+                                continue
+                            file_obj = build_file_from_stored_mapping(
                                 file_mapping=cast(Mapping[str, Any], f),
                                 tenant_id=str(self.runtime.tenant_id),
                             )
-                            for f in file
-                            if isinstance(f, Mapping)
-                        ]
-                        for file in file_var_list:
-                            file_dict: dict[str, str | None] = {
-                                "transfer_method": file.transfer_method.value,
-                                "type": file.type.value,
+                            file_dict = {
+                                "transfer_method": file_obj.transfer_method.value,
+                                "type": file_obj.type.value,
                             }
-                            match file.transfer_method:
+                            match file_obj.transfer_method:
                                 case FileTransferMethod.TOOL_FILE:
-                                    file_dict["tool_file_id"] = resolve_file_record_id(file.reference)
+                                    file_dict["tool_file_id"] = resolve_file_record_id(file_obj.reference)
                                 case FileTransferMethod.LOCAL_FILE:
-                                    file_dict["upload_file_id"] = resolve_file_record_id(file.reference)
+                                    file_dict["upload_file_id"] = resolve_file_record_id(file_obj.reference)
                                 case FileTransferMethod.DATASOURCE_FILE:
-                                    file_dict["datasource_file_id"] = resolve_file_record_id(file.reference)
+                                    file_dict["datasource_file_id"] = resolve_file_record_id(file_obj.reference)
                                 case FileTransferMethod.REMOTE_URL:
-                                    file_dict["url"] = file.generate_url()
-
+                                    file_dict["url"] = file_obj.generate_url()
                             files.append(file_dict)
                     except Exception:
                         logger.exception("Failed to transform file %s", file)
@@ -322,6 +365,26 @@ class WorkflowTool(Tool):
                 parameters_result[parameter.name] = tool_parameters.get(parameter.name)
 
         return parameters_result, files
+
+    @staticmethod
+    def _try_build_file_dict_from_resolved(
+        mapping: Mapping[str, Any],
+    ) -> dict[str, str | None] | None:
+        """Return a file dict directly if *mapping* already contains a resolved
+        file id (``upload_file_id``, ``tool_file_id``, etc.).
+
+        This avoids a redundant DB round-trip for files that were pre-resolved
+        in the agent runtime-parameters serialisation step.
+        """
+        for id_key in ("upload_file_id", "tool_file_id", "datasource_file_id"):
+            if mapping.get(id_key):
+                return {
+                    "transfer_method": mapping.get("transfer_method"),
+                    "type": mapping.get("type"),
+                    id_key: mapping[id_key],
+                }
+        # Not pre-resolved – fall back to the normal DB lookup path.
+        return None
 
     def _extract_files(self, outputs: dict[str, Any]) -> tuple[dict[str, Any], list[File]]:
         """

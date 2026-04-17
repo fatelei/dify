@@ -1071,10 +1071,11 @@ class ToolManager:
                     ToolParameter.ToolParameterType.FILE,
                     ToolParameter.ToolParameterType.FILES,
                 }
-                and parameter.required
                 and typ == "agent"
             ):
-                raise ValueError(f"file type parameter {parameter.name} not supported in agent")
+                # Skip file-type parameters in agent context;
+                # their values are handled via manual_input_value in runtime_support.
+                continue
             # save tool parameter to tool entity memory
             if parameter.form == ToolParameter.ToolParameterForm.FORM:
                 if variable_pool:

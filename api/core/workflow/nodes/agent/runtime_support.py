@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from typing import Any, cast
 
+from graphon.file import File, FileTransferMethod
 from graphon.model_runtime.entities.model_entities import AIModelEntity, ModelType
 from graphon.runtime import VariablePool
 from packaging.version import Version
@@ -27,6 +29,8 @@ from .entities import AgentNodeData, AgentOldVersionModelFeatures, ParamsAutoGen
 from .exceptions import AgentInputTypeError, AgentVariableNotFoundError
 from .strategy_protocols import ResolvedAgentStrategy
 
+logger = logging.getLogger(__name__)
+
 
 class AgentRuntimeSupport:
     def build_parameters(
@@ -42,6 +46,7 @@ class AgentRuntimeSupport:
         invoke_from: Any,
         for_log: bool = False,
     ) -> dict[str, Any]:
+        logger.info(f"Building parameters for {agent_parameters}")
         agent_parameters_dictionary = {parameter.name: parameter for parameter in agent_parameters}
 
         result: dict[str, Any] = {}
@@ -164,6 +169,9 @@ class AgentRuntimeSupport:
                             **tool_runtime.runtime.runtime_parameters,
                             **manual_input_value,
                         }
+                        # Serialize File objects so runtime_parameters can be JSON-encoded
+                        # for transport to the plugin daemon.
+                        runtime_parameters = _serialize_file_values(runtime_parameters)
                         tool_value.append(
                             {
                                 **tool_runtime.entity.model_dump(mode="json"),
@@ -201,7 +209,7 @@ class AgentRuntimeSupport:
                     else:
                         value["entity"] = None
             result[parameter_name] = value
-
+        logger.info(result)
         return result
 
     def build_credentials(self, *, parameters: dict[str, Any]) -> InvokeCredentials:
@@ -284,3 +292,42 @@ class AgentRuntimeSupport:
         if meta_version and Version(meta_version) > Version("0.0.1"):
             return tools
         return [tool for tool in tools if tool.get("type") != ToolProviderType.MCP]
+
+
+def _serialize_file_values(params: dict[str, Any]) -> dict[str, Any]:
+    """Convert File objects in parameter values to JSON-serializable dicts.
+
+    NOTE: Currently only workflow-as-tool (SYSTEM_FILES) file passing is
+    supported through this path.  Other tool types (built-in, API, plugin)
+    do not support file-type parameters in agent context.
+
+    Each File is serialised via ``model_dump`` with the resolved record id
+    (``upload_file_id`` / ``tool_file_id`` / ``datasource_file_id``) embedded
+    so that the backwards-invocation path can skip the DB re-lookup.
+    """
+    from core.workflow.file_reference import resolve_file_record_id
+
+    def _dump(file: File) -> dict[str, Any]:
+        file_dict: dict[str, Any] = file.model_dump(mode="json")
+        record_id = resolve_file_record_id(file.reference)
+        if record_id:
+            match file.transfer_method:
+                case FileTransferMethod.LOCAL_FILE:
+                    file_dict["upload_file_id"] = record_id
+                case FileTransferMethod.TOOL_FILE:
+                    file_dict["tool_file_id"] = record_id
+                case FileTransferMethod.DATASOURCE_FILE:
+                    file_dict["datasource_file_id"] = record_id
+                case _:
+                    pass
+        return file_dict
+
+    result = {}
+    for key, value in params.items():
+        if isinstance(value, File):
+            result[key] = _dump(value)
+        elif isinstance(value, list):
+            result[key] = [_dump(item) if isinstance(item, File) else item for item in value]
+        else:
+            result[key] = value
+    return result

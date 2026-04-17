@@ -5,6 +5,7 @@ import logging
 import threading
 import uuid
 from collections.abc import Generator, Mapping, Sequence
+from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from flask import Flask, current_app
@@ -28,7 +29,8 @@ from core.app.apps.workflow.app_queue_manager import WorkflowAppQueueManager
 from core.app.apps.workflow.app_runner import WorkflowAppRunner
 from core.app.apps.workflow.generate_response_converter import WorkflowAppGenerateResponseConverter
 from core.app.apps.workflow.generate_task_pipeline import WorkflowAppGenerateTaskPipeline
-from core.app.entities.app_invoke_entities import InvokeFrom, WorkflowAppGenerateEntity
+from core.app.entities.app_invoke_entities import InvokeFrom, UserFrom, WorkflowAppGenerateEntity
+from core.app.file_access import FileAccessScope, bind_file_access_scope
 from core.app.entities.task_entities import WorkflowAppBlockingResponse, WorkflowAppStreamResponse
 from core.app.layers.pause_state_persist_layer import PauseStateLayerConfig, PauseStatePersistenceLayer
 from core.db.session_factory import session_factory
@@ -127,24 +129,38 @@ class WorkflowAppGenerator(BaseAppGenerator):
         root_node_id: str | None = None,
         graph_engine_layers: Sequence[GraphEngineLayer] = (),
         pause_state_config: PauseStateLayerConfig | None = None,
+        system_files: Sequence["File"] | None = None,
     ) -> Mapping[str, Any] | Generator[Mapping[str, Any] | str, None, None]:
-        with self._bind_file_access_scope(tenant_id=app_model.tenant_id, user=user, invoke_from=invoke_from):
-            files: Sequence[Mapping[str, Any]] = args.get("files") or []
-
-            # parse files
-            # TODO(QuantumGhost): Move file parsing logic to the API controller layer
-            # for better separation of concerns.
-            #
-            # For implementation reference, see the `_parse_file` function and
-            # `DraftWorkflowNodeRunApi` class which handle this properly.
+        # For sub-workflows (call_depth > 0, e.g. workflow-as-tool invoked
+        # by an agent), files have already been validated by the parent
+        # workflow.  Use an Account-level scope so the ownership check is
+        # skipped and pre-validated files remain accessible.
+        with self._bind_file_access_scope_for_depth(
+            tenant_id=app_model.tenant_id, user=user, invoke_from=invoke_from, call_depth=call_depth,
+        ):
             file_extra_config = FileUploadConfigManager.convert(workflow.features_dict, is_vision=False)
-            system_files = file_factory.build_from_mappings(
-                mappings=files,
-                tenant_id=app_model.tenant_id,
-                config=file_extra_config,
-                strict_type_validation=True if invoke_from == InvokeFrom.SERVICE_API else False,
-                access_controller=self._file_access_controller,
-            )
+
+            # When the caller provides pre-built File objects (e.g. from an
+            # agent backwards-invocation) skip the DB round-trip that may
+            # fail under a restrictive file-access scope.
+            if system_files is not None:
+                pass  # use caller-supplied File objects directly
+            else:
+                files: Sequence[Mapping[str, Any]] = args.get("files") or []
+
+                # parse files
+                # TODO(QuantumGhost): Move file parsing logic to the API controller layer
+                # for better separation of concerns.
+                #
+                # For implementation reference, see the `_parse_file` function and
+                # `DraftWorkflowNodeRunApi` class which handle this properly.
+                system_files = file_factory.build_from_mappings(
+                    mappings=files,
+                    tenant_id=app_model.tenant_id,
+                    config=file_extra_config,
+                    strict_type_validation=True if invoke_from == InvokeFrom.SERVICE_API else False,
+                    access_controller=self._file_access_controller,
+                )
 
             # convert to app config
             app_config = WorkflowAppConfigManager.get_app_config(
@@ -264,6 +280,40 @@ class WorkflowAppGenerator(BaseAppGenerator):
             pause_state_config=pause_state_config,
         )
 
+    @staticmethod
+    def _bind_file_access_scope_for_depth(
+        *,
+        tenant_id: str,
+        user: Account | EndUser,
+        invoke_from: InvokeFrom,
+        call_depth: int = 0,
+    ) -> AbstractContextManager[None]:
+        """Bind file-access scope, relaxing ownership for sub-workflows.
+
+        When ``call_depth > 0`` the files have already been validated by the
+        parent workflow, so we use ``UserFrom.ACCOUNT`` to skip the end-user
+        ownership check that would otherwise block access.
+        """
+        from contextlib import nullcontext  # local import to match base class pattern
+
+        user_id = getattr(user, "id", None)
+        if not isinstance(user_id, str) or not user_id:
+            return nullcontext()
+
+        if call_depth > 0:
+            user_from = UserFrom.ACCOUNT
+        else:
+            user_from = UserFrom.ACCOUNT if isinstance(user, Account) else UserFrom.END_USER
+
+        return bind_file_access_scope(
+            FileAccessScope(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                user_from=user_from,
+                invoke_from=invoke_from,
+            )
+        )
+
     def _generate(
         self,
         *,
@@ -293,10 +343,11 @@ class WorkflowAppGenerator(BaseAppGenerator):
         :param workflow_node_execution_repository: repository for workflow node execution
         :param streaming: is stream
         """
-        with self._bind_file_access_scope(
+        with self._bind_file_access_scope_for_depth(
             tenant_id=application_generate_entity.app_config.tenant_id,
             user=user,
             invoke_from=invoke_from,
+            call_depth=application_generate_entity.call_depth,
         ):
             graph_layers: list[GraphEngineLayer] = list(graph_engine_layers)
 
